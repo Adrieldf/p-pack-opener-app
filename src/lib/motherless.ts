@@ -10,7 +10,72 @@ export interface CardData {
   favorites: number;
 }
 
-const CORS_PROXY = "https://api.allorigins.win/get?url=";
+/**
+ * CORS proxy configuration.
+ * Each proxy has a different URL format. We try them in order until one works.
+ */
+const CORS_PROXIES: Array<{
+  buildUrl: (target: string) => string;
+  extractBody: (json: Record<string, unknown>) => string;
+}> = [
+  {
+    // corsproxy.io — free tier, 10k req/month, simple prefix
+    buildUrl: (target) => `https://corsproxy.io/?${encodeURIComponent(target)}`,
+    // corsproxy.io returns the raw response, not a JSON wrapper
+    extractBody: () => { throw new Error("raw"); },
+  },
+  {
+    // allorigins.win — wraps response in JSON { contents: "..." }
+    buildUrl: (target) =>
+      `https://api.allorigins.win/get?url=${encodeURIComponent(target)}`,
+    extractBody: (json) => (json as { contents?: string }).contents ?? "",
+  },
+  {
+    // cors.lol — simple prefix, returns raw body
+    buildUrl: (target) => `https://api.cors.lol/?url=${encodeURIComponent(target)}`,
+    extractBody: () => { throw new Error("raw"); },
+  },
+];
+
+const TARGET_URL = "https://motherless.com/random/image";
+
+/**
+ * Tries each CORS proxy in sequence, returning the HTML body on the first
+ * successful response. Returns null if all proxies fail.
+ */
+const fetchViaProxy = async (): Promise<string | null> => {
+  for (const proxy of CORS_PROXIES) {
+    try {
+      const proxyUrl = proxy.buildUrl(TARGET_URL);
+      const response = await fetch(proxyUrl, {
+        // Avoid caching so we always get a fresh random image
+        cache: "no-store",
+      });
+
+      if (!response.ok) continue;
+
+      let html: string;
+      // Some proxies return raw HTML directly; others wrap in JSON
+      try {
+        const json = await response.clone().json() as Record<string, unknown>;
+        html = proxy.extractBody(json);
+      } catch {
+        // Proxy returns raw HTML (not JSON-wrapped)
+        html = await response.text();
+      }
+
+      if (html && html.length > 100) {
+        return html;
+      }
+    } catch {
+      // This proxy failed; try the next one
+      continue;
+    }
+  }
+
+  console.warn("All CORS proxies failed for motherless.com");
+  return null;
+};
 
 /**
  * Computes rarity based on favorites-to-views ratio.
@@ -42,39 +107,38 @@ const parseCount = (str: string): number => {
 };
 
 /**
- * Fetches a single random image from motherless.com via CORS proxy.
- * Returns null if parsing fails.
+ * Fetches a single random image from motherless.com via CORS proxy fallback chain.
+ * Returns null if all proxies fail or parsing fails.
  */
 const fetchOneImage = async (): Promise<CardData | null> => {
   try {
-    const targetUrl = "https://motherless.com/random/image";
-    const proxyUrl = `${CORS_PROXY}${encodeURIComponent(targetUrl)}`;
-
-    const response = await fetch(proxyUrl);
-    if (!response.ok) return null;
-
-    const json = await response.json();
-    const html: string = json.contents ?? "";
-
+    const html = await fetchViaProxy();
     if (!html) return null;
 
     // --- Parse canonical URL (the actual image page URL after redirect) ---
-    const canonicalMatch = html.match(/<link\s+rel="canonical"\s+href="([^"]+)"/i)
-      || html.match(/<meta\s+property="og:url"\s+content="([^"]+)"/i);
-    const sourceUrl = canonicalMatch ? canonicalMatch[1] : targetUrl;
+    const canonicalMatch =
+      html.match(/<link\s+rel="canonical"\s+href="([^"]+)"/i) ||
+      html.match(/<meta\s+property="og:url"\s+content="([^"]+)"/i);
+    const sourceUrl = canonicalMatch ? canonicalMatch[1] : TARGET_URL;
 
     // Extract the image ID from the canonical URL for a stable ID
     const idMatch = sourceUrl.match(/motherless\.com\/([A-Z0-9]+)/i);
     const id = idMatch ? idMatch[1] : `ml_${Date.now()}_${Math.random()}`;
 
     // --- Parse image URL ---
-    const ogImageMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+    const ogImageMatch = html.match(
+      /<meta\s+property="og:image"\s+content="([^"]+)"/i
+    );
     const imageUrl = ogImageMatch ? ogImageMatch[1] : "";
     if (!imageUrl) return null;
 
     // --- Parse title ---
-    const ogTitleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i);
-    const h1Match = html.match(/<h1[^>]*class="[^"]*media-title[^"]*"[^>]*>([^<]+)<\/h1>/i);
+    const ogTitleMatch = html.match(
+      /<meta\s+property="og:title"\s+content="([^"]+)"/i
+    );
+    const h1Match = html.match(
+      /<h1[^>]*class="[^"]*media-title[^"]*"[^>]*>([^<]+)<\/h1>/i
+    );
     const titleTagMatch = html.match(/<title>([^<]+)<\/title>/i);
     let name = ogTitleMatch
       ? ogTitleMatch[1]
@@ -84,24 +148,37 @@ const fetchOneImage = async (): Promise<CardData | null> => {
       ? titleTagMatch[1].replace(/\s*\|\s*MOTHERLESS\.COM.*$/i, "").trim()
       : "Untitled";
     // Clean HTML entities
-    name = name.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+    name = name
+      .replace(/&amp;/g, "&")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim();
 
     // --- Parse views ---
-    // Motherless shows: <span class="count">1,234</span> near "Views"
     let views = 0;
-    const viewsBlockMatch = html.match(/views[^<]*<[^>]+class="[^"]*count[^"]*"[^>]*>([\d,KkMm.]+)</i)
-      || html.match(/<span[^>]*>Views<\/span>[^<]*<span[^>]*>([\d,KkMm.]+)<\/span>/i)
-      || html.match(/class="[^"]*views[^"]*"[^>]*>\s*([\d,KkMm.]+)/i);
+    const viewsBlockMatch =
+      html.match(
+        /views[^<]*<[^>]+class="[^"]*count[^"]*"[^>]*>([\d,KkMm.]+)</i
+      ) ||
+      html.match(
+        /<span[^>]*>Views<\/span>[^<]*<span[^>]*>([\d,KkMm.]+)<\/span>/i
+      ) ||
+      html.match(/class="[^"]*views[^"]*"[^>]*>\s*([\d,KkMm.]+)/i);
     if (viewsBlockMatch) {
       views = parseCount(viewsBlockMatch[1]);
     }
 
     // --- Parse favorites ---
     let favorites = 0;
-    const favBlockMatch = html.match(/favorited[^<]*<[^>]+class="[^"]*count[^"]*"[^>]*>([\d,KkMm.]+)</i)
-      || html.match(/<span[^>]*>Favorites<\/span>[^<]*<span[^>]*>([\d,KkMm.]+)<\/span>/i)
-      || html.match(/class="[^"]*favorites[^"]*"[^>]*>\s*([\d,KkMm.]+)/i)
-      || html.match(/id="[^"]*favorite[^"]*-count[^"]*"[^>]*>\s*([\d,KkMm.]+)/i);
+    const favBlockMatch =
+      html.match(
+        /favorited[^<]*<[^>]+class="[^"]*count[^"]*"[^>]*>([\d,KkMm.]+)</i
+      ) ||
+      html.match(
+        /<span[^>]*>Favorites<\/span>[^<]*<span[^>]*>([\d,KkMm.]+)<\/span>/i
+      ) ||
+      html.match(/class="[^"]*favorites[^"]*"[^>]*>\s*([\d,KkMm.]+)/i) ||
+      html.match(/id="[^"]*favorite[^"]*-count[^"]*"[^>]*>\s*([\d,KkMm.]+)/i);
     if (favBlockMatch) {
       favorites = parseCount(favBlockMatch[1]);
     }
