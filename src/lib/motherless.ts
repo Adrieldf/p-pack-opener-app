@@ -43,24 +43,31 @@ const TARGET_URL = "https://motherless.com/random/image";
  * Tries each CORS proxy in sequence, returning the HTML body on the first
  * successful response. Returns null if all proxies fail.
  */
-const fetchViaProxy = async (): Promise<string | null> => {
+const fetchViaProxy = async (targetUrl: string): Promise<string | null> => {
   for (const proxy of CORS_PROXIES) {
     try {
-      const proxyUrl = proxy.buildUrl(TARGET_URL);
+      const proxyUrl = proxy.buildUrl(targetUrl);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
       const response = await fetch(proxyUrl, {
-        // Avoid caching so we always get a fresh random image
         cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0"
+        },
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       if (!response.ok) continue;
 
       let html: string;
-      // Some proxies return raw HTML directly; others wrap in JSON
       try {
         const json = await response.clone().json() as Record<string, unknown>;
         html = proxy.extractBody(json);
       } catch {
-        // Proxy returns raw HTML (not JSON-wrapped)
         html = await response.text();
       }
 
@@ -68,7 +75,6 @@ const fetchViaProxy = async (): Promise<string | null> => {
         return html;
       }
     } catch {
-      // This proxy failed; try the next one
       continue;
     }
   }
@@ -78,15 +84,14 @@ const fetchViaProxy = async (): Promise<string | null> => {
 };
 
 /**
- * Computes rarity based on favorites-to-views ratio.
- * The fewer views and the more favorites → the rarer.
+ * Computes rarity based on the number of views.
+ * Fewer views = Rarer.
  */
-const getRarityByScore = (views: number, favorites: number): Rarity => {
-  const score = favorites / Math.max(views, 1);
-  if (score >= 0.05) return "Legendary";
-  if (score >= 0.02) return "Epic";
-  if (score >= 0.01) return "Rare";
-  if (score >= 0.005) return "Uncommon";
+const getRarityByViews = (views: number): Rarity => {
+  if (views < 50) return "Legendary";
+  if (views < 100) return "Epic";
+  if (views < 500) return "Rare";
+  if (views < 1000) return "Uncommon";
   return "Common";
 };
 
@@ -112,7 +117,12 @@ const parseCount = (str: string): number => {
  */
 const fetchOneImage = async (): Promise<CardData | null> => {
   try {
-    const html = await fetchViaProxy();
+    // Add a unique timestamp and random salt to ensure the proxy and server
+    // treat each parallel request as a distinct event.
+    const cacheBuster = `?t=${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const targetWithBuster = TARGET_URL + cacheBuster;
+    
+    const html = await fetchViaProxy(targetWithBuster);
     if (!html) return null;
 
     // --- Parse canonical URL (the actual image page URL after redirect) ---
@@ -156,36 +166,25 @@ const fetchOneImage = async (): Promise<CardData | null> => {
 
     // --- Parse views ---
     let views = 0;
-    const viewsBlockMatch =
-      html.match(
-        /views[^<]*<[^>]+class="[^"]*count[^"]*"[^>]*>([\d,KkMm.]+)</i
-      ) ||
-      html.match(
-        /<span[^>]*>Views<\/span>[^<]*<span[^>]*>([\d,KkMm.]+)<\/span>/i
-      ) ||
-      html.match(/class="[^"]*views[^"]*"[^>]*>\s*([\d,KkMm.]+)/i);
-    if (viewsBlockMatch) {
-      views = parseCount(viewsBlockMatch[1]);
+    const viewsMatch =
+      html.match(/<span[^>]*class="[^"]*count[^"]*"[^>]*>([\d,KkMm.]+)\s*Views/i) ||
+      html.match(/([\d,KkMm.]+)\s*Views/i);
+    if (viewsMatch) {
+      views = parseCount(viewsMatch[1]);
     }
 
     // --- Parse favorites ---
     let favorites = 0;
-    const favBlockMatch =
-      html.match(
-        /favorited[^<]*<[^>]+class="[^"]*count[^"]*"[^>]*>([\d,KkMm.]+)</i
-      ) ||
-      html.match(
-        /<span[^>]*>Favorites<\/span>[^<]*<span[^>]*>([\d,KkMm.]+)<\/span>/i
-      ) ||
-      html.match(/class="[^"]*favorites[^"]*"[^>]*>\s*([\d,KkMm.]+)/i) ||
-      html.match(/id="[^"]*favorite[^"]*-count[^"]*"[^>]*>\s*([\d,KkMm.]+)/i);
-    if (favBlockMatch) {
-      favorites = parseCount(favBlockMatch[1]);
+    const favMatch =
+      html.match(/<span[^>]*class="[^"]*count[^"]*"[^>]*>([\d,KkMm.]+)\s*Favorites?/i) ||
+      html.match(/([\d,KkMm.]+)\s*Favorites?/i);
+    if (favMatch) {
+      favorites = parseCount(favMatch[1]);
     }
 
     return {
       id,
-      rarity: getRarityByScore(views, favorites),
+      rarity: getRarityByViews(views),
       name,
       imageUrl,
       sourceUrl,
@@ -209,27 +208,29 @@ const rarityOrder: Record<Rarity, number> = {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Fetches `count` random images from motherless.com one at a time.
- * Sequential with a small delay between each to avoid proxy rate-limiting.
- * Each card gets up to 2 retries before being skipped.
+ * Fetches `count` random images from motherless.com in parallel.
  * Images are sorted from lowest to highest rarity for the dramatic reveal.
  */
 export const fetchRandomImages = async (count: number = 5): Promise<CardData[]> => {
-  const cards: CardData[] = [];
-
-  for (let i = 0; i < count; i++) {
-    // Small gap between requests so the proxy doesn't rate-limit us
-    if (i > 0) await sleep(400);
-
+  const fetchCardWithRetry = async (index: number): Promise<CardData | null> => {
+    // Stagger the parallel requests (1000ms apart)
+    // This ensures they hit the server at different times to get unique random results
+    if (index > 0) await sleep(index * 1000);
+    
     let card: CardData | null = null;
-    // Up to 2 retry attempts per card if the proxy fails
+    // Up to 2 attempts per card
     for (let attempt = 0; attempt < 2 && !card; attempt++) {
-      if (attempt > 0) await sleep(600);
+      if (attempt > 0) await sleep(500);
       card = await fetchOneImage();
     }
+    return card;
+  };
 
-    if (card) cards.push(card);
-  }
+  // Start all fetches with staggering
+  const cardPromises = Array.from({ length: count }, (_, i) => fetchCardWithRetry(i));
+  const results = await Promise.all(cardPromises);
+  
+  const cards = results.filter((c): c is CardData => c !== null);
 
   // Sort lowest → highest rarity for reveal order (Common first, Legendary last)
   return cards.sort((a, b) => rarityOrder[a.rarity] - rarityOrder[b.rarity]);

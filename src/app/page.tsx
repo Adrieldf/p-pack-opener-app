@@ -73,7 +73,7 @@ export default function Home() {
       setTimeout(() => setConfirmClear(false), 3000);
     } else {
       setCollection([]);
-      localStorage.removeItem("gacha_collection");
+      localStorage.removeItem("photo_collection");
       setConfirmClear(false);
     }
   };
@@ -138,7 +138,7 @@ export default function Home() {
   }, [flippedCards, activeCardIndex, packState, cards, playSound]);
 
   useEffect(() => {
-    const saved = localStorage.getItem("gacha_collection");
+    const saved = localStorage.getItem("photo_collection");
     if (saved) {
       try { setCollection(JSON.parse(saved)); } catch (e) { console.error("Failed to parse local collection", e); }
     }
@@ -164,7 +164,7 @@ export default function Home() {
 
     setCollection((prev) => {
       const newCollection = [...prev, ...fetchedCards];
-      localStorage.setItem("gacha_collection", JSON.stringify(newCollection));
+      localStorage.setItem("photo_collection", JSON.stringify(newCollection));
       return newCollection;
     });
 
