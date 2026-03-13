@@ -21,8 +21,8 @@ const CORS_PROXIES: Array<{
 }> = [
   {
     name: "corsproxy.io",
-    // corsproxy.io — free tier, simple prefix
-    buildUrl: (target) => `https://corsproxy.io/?url=${encodeURIComponent(target)}`,
+    // corsproxy.io — simple prefix, very reliable usually
+    buildUrl: (target) => `https://corsproxy.io/?${encodeURIComponent(target)}`,
     extractBody: () => { throw new Error("raw"); },
   },
   {
@@ -33,14 +33,21 @@ const CORS_PROXIES: Array<{
     extractBody: (json) => (json as { contents?: string }).contents ?? "",
   },
   {
-    name: "cors.lol",
-    // cors.lol — simple prefix, returns raw body
-    buildUrl: (target) => `https://api.cors.lol/?url=${encodeURIComponent(target)}`,
+    name: "codetabs",
+    // codetabs.com/cors-proxy/ — another alternative
+    buildUrl: (target) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`,
     extractBody: () => { throw new Error("raw"); },
   },
   {
-    name: "thingproxy",
-    buildUrl: (target) => `https://thingproxy.freeboard.io/fetch/${target}`,
+    name: "corsproxy.org",
+    // corsproxy.org — simple prefix
+    buildUrl: (target) => `https://corsproxy.org/?url=${encodeURIComponent(target)}`,
+    extractBody: () => { throw new Error("raw"); },
+  },
+  {
+    name: "yacdn",
+    // yacdn.org — simple prefix
+    buildUrl: (target) => `https://yacdn.org/proxy/${target}`,
     extractBody: () => { throw new Error("raw"); },
   }
 ];
@@ -52,22 +59,24 @@ const TARGET_URL = "https://motherless.com/random/image";
  * successful response. Returns null if all proxies fail.
  */
 const fetchViaProxy = async (targetUrl: string): Promise<string | null> => {
-  // Randomize proxy order to distribute load and avoid consistent failures if one is down
+  // Shuffle proxies every time to avoid hitting the same one for all parallel requests
   const proxies = [...CORS_PROXIES].sort(() => Math.random() - 0.5);
   
   for (const proxy of proxies) {
     try {
       const proxyUrl = proxy.buildUrl(targetUrl);
       const controller = new AbortController();
-      // Increase timeout to 8s for mobile networks
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      // Increase timeout slightly for distant proxies
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
 
       const response = await fetch(proxyUrl, {
         cache: "no-store",
+        mode: "cors",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
         headers: {
-          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Cache-Control": "no-cache",
           "Pragma": "no-cache",
-          "Expires": "0"
         },
         signal: controller.signal,
       });
@@ -80,16 +89,24 @@ const fetchViaProxy = async (targetUrl: string): Promise<string | null> => {
 
       let html: string;
       try {
-        const json = await response.clone().json() as Record<string, unknown>;
-        html = proxy.extractBody(json);
+        // Some proxies (allorigins) return JSON
+        const responseClone = response.clone();
+        const text = await responseClone.text();
+        if (text.trim().startsWith('{')) {
+          const json = JSON.parse(text) as Record<string, unknown>;
+          html = proxy.extractBody(json);
+        } else {
+          html = text;
+        }
       } catch {
         html = await response.text();
       }
 
-      if (html && html.length > 200) {
+      // Check if we actually got motherless content, not a "too many requests" or "block" page
+      if (html && html.length > 500 && html.toLowerCase().includes("motherless")) {
         return html;
       } else {
-        console.warn(`Proxy ${proxy.name} returned suspiciously short HTML (${html?.length ?? 0} chars)`);
+        console.warn(`Proxy ${proxy.name} returned invalid or short HTML (${html?.length ?? 0} chars)`);
       }
     } catch (err) {
       console.warn(`Proxy ${proxy.name} failed:`, err);
@@ -228,23 +245,23 @@ export const fetchRandomImages = async (count: number = 5): Promise<CardData[]> 
   const cards: CardData[] = [];
   
   // We'll attempt to fill the batch until we have 'count' cards or hit a hard limit
-  const maxTotalAttempts = count * 4;
+  const maxTotalAttempts = count * 5;
   let attempts = 0;
 
   const fetchCardWithRetry = async (index: number): Promise<CardData | null> => {
     // Staggering keeps requests distinct for the CDN/Proxy
-    if (index > 0) await sleep(index * 250);
+    // Increased to 400ms for better reliability on GitHub Pages
+    if (index > 0) await sleep(index * 400);
     
     // Up to 3 attempts for this specific slot
     for (let slotAttempt = 0; slotAttempt < 3; slotAttempt++) {
-      if (slotAttempt > 0) await sleep(500);
+      if (slotAttempt > 0) await sleep(600);
       
       const card = await fetchOneImage();
       if (card && !uniqueIds.has(card.id)) {
         uniqueIds.add(card.id);
         return card;
       }
-      // If we got a duplicate, we log and loop to try again for this slot
       if (card) console.log(`Discarded duplicate ID: ${card.id}`);
     }
     return null;
