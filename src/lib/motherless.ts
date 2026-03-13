@@ -15,26 +15,34 @@ export interface CardData {
  * Each proxy has a different URL format. We try them in order until one works.
  */
 const CORS_PROXIES: Array<{
+  name: string;
   buildUrl: (target: string) => string;
   extractBody: (json: Record<string, unknown>) => string;
 }> = [
   {
-    // corsproxy.io — free tier, 10k req/month, simple prefix
-    buildUrl: (target) => `https://corsproxy.io/?${encodeURIComponent(target)}`,
-    // corsproxy.io returns the raw response, not a JSON wrapper
+    name: "corsproxy.io",
+    // corsproxy.io — free tier, simple prefix
+    buildUrl: (target) => `https://corsproxy.io/?url=${encodeURIComponent(target)}`,
     extractBody: () => { throw new Error("raw"); },
   },
   {
+    name: "allorigins",
     // allorigins.win — wraps response in JSON { contents: "..." }
     buildUrl: (target) =>
       `https://api.allorigins.win/get?url=${encodeURIComponent(target)}`,
     extractBody: (json) => (json as { contents?: string }).contents ?? "",
   },
   {
+    name: "cors.lol",
     // cors.lol — simple prefix, returns raw body
     buildUrl: (target) => `https://api.cors.lol/?url=${encodeURIComponent(target)}`,
     extractBody: () => { throw new Error("raw"); },
   },
+  {
+    name: "thingproxy",
+    buildUrl: (target) => `https://thingproxy.freeboard.io/fetch/${target}`,
+    extractBody: () => { throw new Error("raw"); },
+  }
 ];
 
 const TARGET_URL = "https://motherless.com/random/image";
@@ -44,11 +52,15 @@ const TARGET_URL = "https://motherless.com/random/image";
  * successful response. Returns null if all proxies fail.
  */
 const fetchViaProxy = async (targetUrl: string): Promise<string | null> => {
-  for (const proxy of CORS_PROXIES) {
+  // Randomize proxy order to distribute load and avoid consistent failures if one is down
+  const proxies = [...CORS_PROXIES].sort(() => Math.random() - 0.5);
+  
+  for (const proxy of proxies) {
     try {
       const proxyUrl = proxy.buildUrl(targetUrl);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      // Increase timeout to 8s for mobile networks
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
 
       const response = await fetch(proxyUrl, {
         cache: "no-store",
@@ -61,7 +73,10 @@ const fetchViaProxy = async (targetUrl: string): Promise<string | null> => {
       });
       clearTimeout(timeoutId);
 
-      if (!response.ok) continue;
+      if (!response.ok) {
+        console.warn(`Proxy ${proxy.name} returned status ${response.status}`);
+        continue;
+      }
 
       let html: string;
       try {
@@ -71,15 +86,17 @@ const fetchViaProxy = async (targetUrl: string): Promise<string | null> => {
         html = await response.text();
       }
 
-      if (html && html.length > 100) {
+      if (html && html.length > 200) {
         return html;
+      } else {
+        console.warn(`Proxy ${proxy.name} returned suspiciously short HTML (${html?.length ?? 0} chars)`);
       }
-    } catch {
+    } catch (err) {
+      console.warn(`Proxy ${proxy.name} failed:`, err);
       continue;
     }
   }
 
-  console.warn("All CORS proxies failed for motherless.com");
   return null;
 };
 
@@ -117,38 +134,33 @@ const parseCount = (str: string): number => {
  */
 const fetchOneImage = async (): Promise<CardData | null> => {
   try {
-    // Add a unique timestamp and random salt to ensure the proxy and server
-    // treat each parallel request as a distinct event.
     const cacheBuster = `?t=${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const targetWithBuster = TARGET_URL + cacheBuster;
     
     const html = await fetchViaProxy(targetWithBuster);
     if (!html) return null;
 
-    // --- Parse canonical URL (the actual image page URL after redirect) ---
+    // --- Parse canonical URL ---
     const canonicalMatch =
       html.match(/<link\s+rel="canonical"\s+href="([^"]+)"/i) ||
       html.match(/<meta\s+property="og:url"\s+content="([^"]+)"/i);
     const sourceUrl = canonicalMatch ? canonicalMatch[1] : TARGET_URL;
 
-    // Extract the image ID from the canonical URL for a stable ID
+    // Extract image ID
     const idMatch = sourceUrl.match(/motherless\.com\/([A-Z0-9]+)/i);
     const id = idMatch ? idMatch[1] : `ml_${Date.now()}_${Math.random()}`;
 
     // --- Parse image URL ---
-    const ogImageMatch = html.match(
-      /<meta\s+property="og:image"\s+content="([^"]+)"/i
-    );
+    const ogImageMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
     const imageUrl = ogImageMatch ? ogImageMatch[1] : "";
-    if (!imageUrl) return null;
+    if (!imageUrl) {
+      console.warn("Failed to find imageUrl in HTML for ID:", id);
+      return null;
+    }
 
     // --- Parse title ---
-    const ogTitleMatch = html.match(
-      /<meta\s+property="og:title"\s+content="([^"]+)"/i
-    );
-    const h1Match = html.match(
-      /<h1[^>]*class="[^"]*media-title[^"]*"[^>]*>([^<]+)<\/h1>/i
-    );
+    const ogTitleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i);
+    const h1Match = html.match(/<h1[^>]*class="[^"]*media-title[^"]*"[^>]*>([^<]+)<\/h1>/i);
     const titleTagMatch = html.match(/<title>([^<]+)<\/title>/i);
     let name = ogTitleMatch
       ? ogTitleMatch[1]
@@ -157,7 +169,7 @@ const fetchOneImage = async (): Promise<CardData | null> => {
       : titleTagMatch
       ? titleTagMatch[1].replace(/\s*\|\s*MOTHERLESS\.COM.*$/i, "").trim()
       : "Untitled";
-    // Clean HTML entities
+    
     name = name
       .replace(/&amp;/g, "&")
       .replace(/&quot;/g, '"')
@@ -209,29 +221,49 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Fetches `count` random images from motherless.com in parallel.
- * Images are sorted from lowest to highest rarity for the dramatic reveal.
+ * Ensures that all returned cards in the batch have unique IDs.
  */
 export const fetchRandomImages = async (count: number = 5): Promise<CardData[]> => {
+  const uniqueIds = new Set<string>();
+  const cards: CardData[] = [];
+  
+  // We'll attempt to fill the batch until we have 'count' cards or hit a hard limit
+  const maxTotalAttempts = count * 4;
+  let attempts = 0;
+
   const fetchCardWithRetry = async (index: number): Promise<CardData | null> => {
-    // Stagger the parallel requests (1000ms apart)
-    // This ensures they hit the server at different times to get unique random results
-    if (index > 0) await sleep(index * 1000);
+    // Staggering keeps requests distinct for the CDN/Proxy
+    if (index > 0) await sleep(index * 250);
     
-    let card: CardData | null = null;
-    // Up to 2 attempts per card
-    for (let attempt = 0; attempt < 2 && !card; attempt++) {
-      if (attempt > 0) await sleep(500);
-      card = await fetchOneImage();
+    // Up to 3 attempts for this specific slot
+    for (let slotAttempt = 0; slotAttempt < 3; slotAttempt++) {
+      if (slotAttempt > 0) await sleep(500);
+      
+      const card = await fetchOneImage();
+      if (card && !uniqueIds.has(card.id)) {
+        uniqueIds.add(card.id);
+        return card;
+      }
+      // If we got a duplicate, we log and loop to try again for this slot
+      if (card) console.log(`Discarded duplicate ID: ${card.id}`);
     }
-    return card;
+    return null;
   };
 
-  // Start all fetches with staggering
-  const cardPromises = Array.from({ length: count }, (_, i) => fetchCardWithRetry(i));
-  const results = await Promise.all(cardPromises);
-  
-  const cards = results.filter((c): c is CardData => c !== null);
+  // We fetch sequentially or in small chunks to properly handle the uniqueId set
+  // This is slightly slower than pure parallel but prevents the "parallel race" where 
+  // two requests get the same ID at the same time and both "passed" the check.
+  for (let i = 0; i < count && attempts < maxTotalAttempts; i++) {
+    const card = await fetchCardWithRetry(i);
+    if (card) {
+      cards.push(card);
+    }
+    attempts++;
+  }
 
-  // Sort lowest → highest rarity for reveal order (Common first, Legendary last)
+  if (cards.length === 0) {
+    console.error("Failed to fetch any unique cards.");
+  }
+
   return cards.sort((a, b) => rarityOrder[a.rarity] - rarityOrder[b.rarity]);
 };

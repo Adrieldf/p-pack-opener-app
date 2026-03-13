@@ -154,6 +154,15 @@ export default function Home() {
     setIsLoading(true);
     const fetchedCards = await fetchRandomImages(packSize);
 
+    if (fetchedCards.length === 0) {
+      setIsLoading(false);
+      isOpenedRef.current = false;
+      setPackState("sealed");
+      setTearProgress(0);
+      alert("Failed to load cards. Please check your connection and try again.");
+      return;
+    }
+
     const existingIds = new Set(collection.map((c) => c.id));
     const newlyFoundIds = new Set<string>();
     fetchedCards.forEach((c) => { if (!existingIds.has(c.id)) newlyFoundIds.add(c.id); });
@@ -373,7 +382,7 @@ export default function Home() {
 
               return (
                 <motion.div
-                  key={card.id}
+                  key={`${card.id}-${idx}`}
                   initial={{ y: 50, scale: 0.8, opacity: 0 }}
                   animate={{
                     y: packState === "done" ? idx * 10 - 20 : 0,
@@ -391,11 +400,11 @@ export default function Home() {
                       else if (idx === activeCardIndex) handleNextCard();
                     }
                   }}
-                  className={`absolute ${isAutoMode ? "pointer-events-none" : "cursor-pointer"} perspective-1000 w-[368px] h-[461px]`}
-                  style={{ zIndex }}
+                  className={`absolute ${isAutoMode ? "pointer-events-none" : "cursor-pointer"} w-[90vw] max-w-[368px] aspect-[368/461]`}
+                  style={{ zIndex, perspective: "1000px" }}
                 >
                   <motion.div
-                    className="w-full h-full relative preserve-3d"
+                    className="w-full h-full relative"
                     initial={{ rotateY: 180 }}
                     animate={{ rotateY: isFlipped ? 0 : 180 }}
                     transition={{ duration: 0.6, type: "spring" }}
@@ -403,7 +412,7 @@ export default function Home() {
                   >
                     {/* Card Back */}
                     <div
-                      className="absolute inset-0 w-full h-full bg-slate-900 rounded-xl border-4 border-slate-500 shadow-[0_0_20px_rgba(100,116,139,0.5)] flex flex-col items-center justify-center backface-hidden overflow-hidden"
+                      className="absolute inset-0 w-full h-full bg-slate-900 rounded-xl border-4 border-slate-500 shadow-xl flex flex-col items-center justify-center overflow-hidden"
                       style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}
                     >
                       {/* Decorative dots */}
@@ -413,11 +422,11 @@ export default function Home() {
                       <div className="absolute right-1 top-0 bottom-0 w-3 flex flex-col py-1 space-y-1.5 opacity-30">
                         {Array.from({ length: 24 }).map((_, i) => <div key={`r-${i}`} className="w-full h-2 bg-black rounded-sm" />)}
                       </div>
-                      <div className="w-24 h-24 rounded-full border-2 border-slate-500/30 flex items-center justify-center p-2 mb-4 relative drop-shadow-xl">
+                      <div className="w-24 h-24 rounded-full border-2 border-slate-500/30 flex items-center justify-center p-2 mb-4 relative">
                         <div className="absolute inset-2 rounded-full border border-dashed border-slate-400/60 animate-[spin_20s_linear_infinite]" />
                         <div className="text-4xl filter grayscale brightness-150">📷</div>
                       </div>
-                      <div className="text-slate-300 font-black text-xl tracking-[0.2em] font-serif text-center drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]">
+                      <div className="text-slate-300 font-black text-xl tracking-[0.2em] font-serif text-center drop-shadow-lg">
                         PHOTO<br />COLLECTION
                       </div>
                       {packState === "revealing" && !isFlipped && (
@@ -429,12 +438,12 @@ export default function Home() {
 
                     {/* Card Front */}
                     <div
-                      className={`absolute inset-0 w-full h-full bg-gradient-to-br ${col.bg} rounded-xl p-1 shadow-2xl backface-hidden`}
+                      className={`absolute inset-0 w-full h-full bg-gradient-to-br ${col.bg} rounded-xl p-1 shadow-2xl`}
                       style={{ backfaceVisibility: "hidden" }}
                     >
-                      <div className={`w-full h-full border-2 ${col.border} rounded-lg flex flex-col bg-black/40 backdrop-blur-sm relative overflow-hidden`}>
+                      <div className={`w-full h-full border-2 ${col.border} rounded-lg flex flex-col bg-slate-900/40 relative overflow-hidden`}>
 
-                        {/* Full-bleed image — clicks bubble up to flip/next handler */}
+                        {/* Full-bleed image */}
                         {card.imageUrl && (
                           <div
                             className="absolute inset-0 z-0 bg-cover bg-center"
@@ -442,14 +451,14 @@ export default function Home() {
                           />
                         )}
 
-                        {/* Gradient overlays */}
-                        <div className="absolute inset-x-0 top-0 h-1/3 bg-gradient-to-b from-black/80 via-black/30 to-transparent z-10 pointer-events-none" />
-                        <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/90 via-black/60 to-transparent z-10 pointer-events-none" />
+                        {/* Gradient overlays - opaque enough to be seen even without image */}
+                        <div className="absolute inset-x-0 top-0 h-1/3 bg-gradient-to-b from-black/60 to-transparent z-10 pointer-events-none" />
+                        <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/80 to-transparent z-10 pointer-events-none" />
 
                         {/* Top: Rarity badge */}
                         <div className="relative z-20 flex justify-between items-start w-full p-3">
                           <div className="flex flex-col gap-1">
-                            <div className="bg-black/50 backdrop-blur rounded px-2 py-1 flex items-center gap-1">
+                            <div className="bg-black/60 rounded px-2 py-1 flex items-center gap-1 shadow-md">
                               <Sparkles className={`w-4 h-4 ${col.icon}`} />
                               <span className={`text-xs font-bold uppercase tracking-wider ${col.text}`}>{card.rarity}</span>
                             </div>
@@ -464,20 +473,20 @@ export default function Home() {
                             )}
                           </div>
                           {/* Views badge */}
-                          <div className="bg-black/50 backdrop-blur rounded px-2 py-1">
-                            <span className="text-white/80 font-bold text-sm">👁 {formatCount(card.views)}</span>
+                          <div className="bg-black/60 rounded px-2 py-1 shadow-md">
+                            <span className="text-white font-bold text-sm">👁 {formatCount(card.views)}</span>
                           </div>
                         </div>
 
                         {/* Bottom: Title + Favorites */}
                         <div className="relative z-20 mt-auto p-4 w-full flex flex-col items-center">
-                          <ScrollableTitle title={card.name} baseClass="text-lg font-black text-white uppercase tracking-tight drop-shadow-md leading-tight" />
+                          <ScrollableTitle title={card.name} baseClass="text-lg font-black text-white uppercase tracking-tight drop-shadow-md leading-tight text-center" />
                           <div className="flex items-center gap-3 mt-1">
-                            <span className="text-pink-400 font-bold text-sm">❤️ {formatCount(card.favorites)}</span>
+                            <span className="text-pink-400 font-bold text-sm drop-shadow-md">❤️ {formatCount(card.favorites)}</span>
                           </div>
                         </div>
                       </div>
-                      <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-transparent opacity-50 mix-blend-overlay rounded-xl pointer-events-none" />
+                      <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/10 to-transparent opacity-30 mix-blend-overlay rounded-xl pointer-events-none" />
                     </div>
                   </motion.div>
                 </motion.div>
@@ -488,7 +497,7 @@ export default function Home() {
           {/* THE PACK */}
           {packState !== "done" && packState !== "revealing" && (
             <motion.div
-              className="absolute w-[368px] h-[461px] z-30 flex flex-col items-center"
+              className="absolute w-[90vw] max-w-[368px] aspect-[368/461] z-30 flex flex-col items-center"
               animate={{ y: [0, -5, 0], transition: { repeat: Infinity, duration: 4, ease: "easeInOut" } }}
             >
               <div className="relative w-full h-full flex flex-col group drop-shadow-2xl">
