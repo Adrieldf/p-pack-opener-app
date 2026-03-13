@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { motion, useAnimation, AnimatePresence } from "framer-motion";
-import { Sparkles, RefreshCcw, ChevronRight, LayoutGrid, X } from "lucide-react";
+import { Sparkles, RefreshCcw, ChevronRight, LayoutGrid, X, Trash2 } from "lucide-react";
 import confetti from "canvas-confetti";
 
 type PackState = "sealed" | "tearing" | "opened" | "revealing" | "done";
@@ -65,6 +65,18 @@ export default function Home() {
   const [newCardIds, setNewCardIds] = useState<Set<string>>(new Set());
   const [isAutoMode, setIsAutoMode] = useState(false);
   const [packSize, setPackSize] = useState(5);
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const clearCollection = () => {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      setTimeout(() => setConfirmClear(false), 3000);
+    } else {
+      setCollection([]);
+      localStorage.removeItem("gacha_collection");
+      setConfirmClear(false);
+    }
+  };
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -672,6 +684,23 @@ export default function Home() {
                       <button onClick={() => setGridSize("md")} className={`px-3 py-1 text-xs font-bold rounded ${gridSize === "md" ? "bg-white/20 text-white" : "text-white/50 hover:text-white transition-colors"}`}>M</button>
                       <button onClick={() => setGridSize("lg")} className={`px-3 py-1 text-xs font-bold rounded ${gridSize === "lg" ? "bg-white/20 text-white" : "text-white/50 hover:text-white transition-colors"}`}>L</button>
                     </div>
+                  </div>
+
+                  <div className="h-px sm:h-12 w-full sm:w-px bg-white/10 shrink-0" />
+
+                  <div className="flex flex-col items-center sm:items-start w-full sm:w-auto shrink-0">
+                    <span className="text-white/50 text-xs font-semibold uppercase tracking-wider mb-1">Collection</span>
+                    <button
+                      onClick={clearCollection}
+                      className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold border transition-all ${
+                        confirmClear
+                          ? "bg-red-600/30 border-red-500/70 text-red-400 animate-pulse"
+                          : "bg-black/40 border-white/20 text-white/60 hover:text-red-400 hover:border-red-500/50 hover:bg-red-950/30"
+                      }`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {confirmClear ? "Sure?" : "Clear"}
+                    </button>
                   </div>
                 </div>
               )}
