@@ -422,20 +422,12 @@ export default function Home() {
                     >
                       <div className={`w-full h-full border-2 ${col.border} rounded-lg flex flex-col bg-black/40 backdrop-blur-sm relative overflow-hidden`}>
 
-                        {/* Full-bleed image — clicking opens source URL */}
+                        {/* Full-bleed image — clicks bubble up to flip/next handler */}
                         {card.imageUrl && (
-                          <a
-                            href={card.sourceUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="absolute inset-0 z-0"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <div
-                              className="w-full h-full bg-cover bg-center"
-                              style={{ backgroundImage: `url(${card.imageUrl})` }}
-                            />
-                          </a>
+                          <div
+                            className="absolute inset-0 z-0 bg-cover bg-center"
+                            style={{ backgroundImage: `url(${card.imageUrl})` }}
+                          />
                         )}
 
                         {/* Gradient overlays */}
@@ -719,8 +711,8 @@ export default function Home() {
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
                       transition={{ delay: (idx % 10) * 0.05 }}
-                      className={`relative ${dims.container} cursor-pointer group transition-transform hover:scale-105`}
-                      onClick={() => window.open(card.sourceUrl, "_blank")}
+                      className={`relative ${dims.container} group transition-transform hover:scale-105 ${isCollectionView ? "cursor-pointer" : ""}`}
+                      onClick={() => isCollectionView && window.open(card.sourceUrl, "_blank")}
                     >
                       {isCollectionView && count > 1 && (
                         <div className="absolute -top-2 -right-2 z-30 bg-purple-600 text-white text-xs font-black px-2 py-1 rounded-full shadow-lg border border-white/20">

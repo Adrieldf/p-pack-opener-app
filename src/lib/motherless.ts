@@ -206,21 +206,30 @@ const rarityOrder: Record<Rarity, number> = {
   Legendary: 4,
 };
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /**
- * Fetches `count` random images from motherless.com, in parallel.
+ * Fetches `count` random images from motherless.com one at a time.
+ * Sequential with a small delay between each to avoid proxy rate-limiting.
+ * Each card gets up to 2 retries before being skipped.
  * Images are sorted from lowest to highest rarity for the dramatic reveal.
  */
 export const fetchRandomImages = async (count: number = 5): Promise<CardData[]> => {
-  // Fetch in parallel but stagger slightly so that different random pages load
-  const results = await Promise.all(
-    Array.from({ length: count }, (_, i) =>
-      new Promise<CardData | null>((resolve) =>
-        setTimeout(() => fetchOneImage().then(resolve), i * 150)
-      )
-    )
-  );
+  const cards: CardData[] = [];
 
-  const cards = results.filter((c): c is CardData => c !== null);
+  for (let i = 0; i < count; i++) {
+    // Small gap between requests so the proxy doesn't rate-limit us
+    if (i > 0) await sleep(400);
+
+    let card: CardData | null = null;
+    // Up to 2 retry attempts per card if the proxy fails
+    for (let attempt = 0; attempt < 2 && !card; attempt++) {
+      if (attempt > 0) await sleep(600);
+      card = await fetchOneImage();
+    }
+
+    if (card) cards.push(card);
+  }
 
   // Sort lowest → highest rarity for reveal order (Common first, Legendary last)
   return cards.sort((a, b) => rarityOrder[a.rarity] - rarityOrder[b.rarity]);
